@@ -1,14 +1,10 @@
 import os
 import asyncio
 from pyrogram import Client, filters
-from pymongo import MongoClient
-from questions import quiz_data
 
-# Environment Variables (Heroku Config Vars)
 api_id = int(os.environ.get("API_ID"))
 api_hash = os.environ.get("API_HASH")
-bot_token = os.environ.get("BOT_TOKEN"))
-mongo_url = os.environ.get("MONGO_URL")
+bot_token = os.environ.get("BOT_TOKEN")
 
 app = Client(
     "neetquizbot",
@@ -17,13 +13,22 @@ app = Client(
     bot_token=bot_token
 )
 
-mongo = MongoClient(mongo_url)
-db = mongo.neetquiz
-scores = db.scores
+quiz_data = [
+    {
+        "question": "2 + 2 = ?",
+        "options": ["3", "4", "5", "6"],
+        "correct": 1
+    },
+    {
+        "question": "Capital of India?",
+        "options": ["Mumbai", "Delhi", "Kolkata", "Chennai"],
+        "correct": 1
+    }
+]
 
+scores = {}
 active_polls = {}
-total_questions = len(quiz_data)
-max_marks = total_questions * 4
+max_marks = len(quiz_data) * 4
 
 
 @app.on_message(filters.command("startquiz") & filters.group)
@@ -33,15 +38,12 @@ async def start_quiz(client, message):
     if member.status not in ["administrator", "creator"]:
         return await message.reply("Only Admin Can Start Quiz ❌")
 
-    scores.delete_many({})
+    scores.clear()
     active_polls.clear()
 
     await message.reply(
-        "🧪 NEET Mock Test Started\n\n"
-        "Marking Scheme:\n"
-        "✅ +4 Correct\n"
-        "❌ -1 Wrong\n"
-        "⏳ 0 Unattempted"
+        "🧪 NEET Mock Test Started\n"
+        "Marking: +4 Correct | -1 Wrong"
     )
 
     for q in quiz_data:
@@ -73,41 +75,33 @@ async def handle_answer(client, poll_answer):
     correct_option = active_polls[poll_id]
     selected_option = poll_answer.option_ids[0]
 
-    if selected_option == correct_option:
-        marks = 4
-    else:
-        marks = -1
+    if user_id not in scores:
+        scores[user_id] = 0
 
-    scores.update_one(
-        {"user_id": user_id},
-        {"$inc": {"score": marks}},
-        upsert=True
-    )
+    if selected_option == correct_option:
+        scores[user_id] += 4
+    else:
+        scores[user_id] -= 1
 
 
 async def show_result(client, chat_id):
 
-    result_text = "🏆 NEET Mock Test Result 🏆\n\n"
+    result_text = "🏆 NEET Result 🏆\n\n"
     rank = 1
 
-    for user in scores.find().sort("score", -1):
-        score = user.get("score", 0)
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    for user_id, score in sorted_scores:
         percentage = (score / max_marks) * 100
 
         result_text += (
-            f"{rank}. User ID: {user['user_id']}\n"
+            f"{rank}. User ID: {user_id}\n"
             f"   Marks: {score}/{max_marks}\n"
             f"   Percentage: {percentage:.2f}%\n\n"
         )
         rank += 1
 
     await client.send_message(chat_id, result_text)
-
-
-@app.on_message(filters.command("stopquiz") & filters.group)
-async def stop_quiz(client, message):
-    active_polls.clear()
-    await message.reply("Quiz Stopped ❌")
 
 
 app.run()
