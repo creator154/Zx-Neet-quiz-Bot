@@ -1,11 +1,15 @@
 import os
-import asyncio
 from pyrogram import Client, filters
+from pymongo import MongoClient
+from questions import quiz_data
 
+# ================= ENV =================
 api_id = int(os.environ.get("API_ID"))
 api_hash = os.environ.get("API_HASH")
 bot_token = os.environ.get("BOT_TOKEN")
+mongo_url = os.environ.get("MONGO_URL")
 
+# ================= APP =================
 app = Client(
     "neetquizbot",
     api_id=api_id,
@@ -13,95 +17,97 @@ app = Client(
     bot_token=bot_token
 )
 
-quiz_data = [
-    {
-        "question": "2 + 2 = ?",
-        "options": ["3", "4", "5", "6"],
-        "correct": 1
-    },
-    {
-        "question": "Capital of India?",
-        "options": ["Mumbai", "Delhi", "Kolkata", "Chennai"],
-        "correct": 1
-    }
-]
+# ================= DATABASE =================
+mongo = MongoClient(mongo_url)
+db = mongo["neet_quiz"]
+users = db["users"]
 
-scores = {}
-active_polls = {}
-max_marks = len(quiz_data) * 4
-
-
-@app.on_message(filters.command("startquiz") & filters.group)
-async def start_quiz(client, message):
-
-    member = await client.get_chat_member(message.chat.id, message.from_user.id)
-    if member.status not in ["administrator", "creator"]:
-        return await message.reply("Only Admin Can Start Quiz ❌")
-
-    scores.clear()
-    active_polls.clear()
-
-    await message.reply(
-        "🧪 NEET Mock Test Started\n"
-        "Marking: +4 Correct | -1 Wrong"
+# ================= START COMMAND =================
+@app.on_message(filters.command("start"))
+async def start(client, message):
+    await message.reply_text(
+        "🎯 Welcome to NEET Quiz Bot!\n\nType /quiz to start quiz."
     )
 
+# ================= QUIZ COMMAND =================
+@app.on_message(filters.command("quiz"))
+async def send_quiz(client, message):
     for q in quiz_data:
-        poll = await client.send_poll(
+        await client.send_poll(
             chat_id=message.chat.id,
             question=q["question"],
             options=q["options"],
             type="quiz",
-            correct_option_id=q["correct"],
-            open_period=20,
+            correct_option_id=q["answer"],
             is_anonymous=False
         )
 
-        active_polls[poll.poll.id] = q["correct"]
-        await asyncio.sleep(25)
+# ================= POLL ANSWER HANDLER =================
+@app.on_message(filters.poll_answer)
+async def handle_poll_answer(client, message):
 
-    await show_result(client, message.chat.id)
+    poll = message.poll_answer
+    user_id = poll.user.id
+    selected_option = poll.option_ids[0]
 
+    # find correct answer
+    correct_option = None
+    for q in quiz_data:
+        if q["answer"] == selected_option:
+            correct_option = q["answer"]
+            break
 
-@app.on_poll_answer()
-async def handle_answer(client, poll_answer):
+    # get user data
+    user = users.find_one({"user_id": user_id})
 
-    poll_id = poll_answer.poll_id
-    user_id = poll_answer.user.id
+    if not user:
+        users.insert_one({
+            "user_id": user_id,
+            "score": 0,
+            "attempted": 0
+        })
+        user = users.find_one({"user_id": user_id})
 
-    if poll_id not in active_polls:
-        return
+    score = user["score"]
+    attempted = user["attempted"]
 
-    correct_option = active_polls[poll_id]
-    selected_option = poll_answer.option_ids[0]
-
-    if user_id not in scores:
-        scores[user_id] = 0
-
+    # NEET Marking
     if selected_option == correct_option:
-        scores[user_id] += 4
+        score += 4
     else:
-        scores[user_id] -= 1
+        score -= 1
 
+    attempted += 1
 
-async def show_result(client, chat_id):
+    users.update_one(
+        {"user_id": user_id},
+        {"$set": {"score": score, "attempted": attempted}}
+    )
 
-    result_text = "🏆 NEET Result 🏆\n\n"
-    rank = 1
+# ================= RESULT COMMAND =================
+@app.on_message(filters.command("result"))
+async def result(client, message):
 
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    user = users.find_one({"user_id": message.from_user.id})
 
-    for user_id, score in sorted_scores:
-        percentage = (score / max_marks) * 100
+    if not user:
+        return await message.reply_text("No quiz attempted yet.")
 
-        result_text += (
-            f"{rank}. User ID: {user_id}\n"
-            f"   Marks: {score}/{max_marks}\n"
-            f"   Percentage: {percentage:.2f}%\n\n"
-        )
-        rank += 1
+    score = user["score"]
+    attempted = user["attempted"]
 
-    await client.send_message(chat_id, result_text)
+    total_marks = attempted * 4
+    percentage = 0
 
+    if total_marks > 0:
+        percentage = (score / total_marks) * 100
 
+    await message.reply_text(
+        f"📊 NEET Quiz Result\n\n"
+        f"Questions Attempted: {attempted}\n"
+        f"Score: {score}\n"
+        f"Percentage: {percentage:.2f}%"
+    )
+
+# ================= RUN =================
 app.run()
