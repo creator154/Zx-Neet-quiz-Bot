@@ -1,12 +1,12 @@
 quiz_data = [
     {
-        "question": "2 + 2 = ?",
+        "question": "What is 2 + 2?",
         "options": ["3", "4", "5", "6"],
-        "correct": 1
+        "answer": 1
     },
     {
         "question": "Capital of India?",
-        "options": ["Mumbai", "Delhi", "Kolkata", "Chennai"],
-        "correct": 1
-    },
+        "options": ["Delhi", "Mumbai", "Kolkata", "Chennai"],
+        "answer": 0
+    }
 ]
