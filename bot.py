@@ -1,5 +1,5 @@
-# bot.py - Telegram Quiz Bot (Private Create + Group Play + Menu)
-# Deploy on Heroku / Render / Railway
+# bot.py - Official-style NEET Quiz Bot for Telegram
+# Private create + Group play + Menu + Timer + Leaderboard
 
 import logging
 import os
@@ -23,9 +23,8 @@ TITLE, DESC, QUESTION = range(3)
 QUESTION_TIMER = 30  # seconds per question
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-
 if not TOKEN:
-    raise ValueError("TELEGRAM_TOKEN environment variable not set!")
+    raise ValueError("TELEGRAM_TOKEN not set in environment variables!")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -41,18 +40,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(welcome, reply_markup=reply_markup)
 
-    inline_keyboard = [
+    inline = [
         [InlineKeyboardButton("Create New Quiz", callback_data="create")],
         [InlineKeyboardButton("View My Quizzes", callback_data="view")],
     ]
-    await update.message.reply_text("Quick actions:", reply_markup=InlineKeyboardMarkup(inline_keyboard))
+    await update.message.reply_text("Quick actions:", reply_markup=InlineKeyboardMarkup(inline))
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
 
     if query.data == "create":
-        await query.edit_message_text("Quiz title bhejo")
+        await query.edit_message_text("Quiz title bhejo (e.g., NEET Biology Quiz)")
         return TITLE
 
     elif query.data == "view":
@@ -68,7 +67,7 @@ async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_desc_or_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.text != '/skip':
         context.user_data['quiz_desc'] = update.message.text
-    await update.message.reply_text("Ab quiz mode poll bhej do (correct answer mark karo)")
+    await update.message.reply_text("Ab quiz mode poll bhej do (correct answer mark kar ke, explanation daal do)")
     context.user_data['questions'] = []
     return QUESTION
 
@@ -86,7 +85,7 @@ async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     }
     context.user_data['questions'].append(question_data)
 
-    await update.message.reply_text(f"Saved! ({len(context.user_data['questions'])} questions)\nNext poll ya /done")
+    await update.message.reply_text(f"Question saved! ({len(context.user_data['questions'])} ab tak)\nNext poll ya /done")
     return QUESTION
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -129,7 +128,7 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     context.chat_data['active_quiz'] = {'quiz': quiz, 'index': 0, 'scores': {}}
 
-    await update.message.reply_text(f"Quiz shuru: {quiz['title']}")
+    await update.message.reply_text(f"Quiz shuru: {quiz['title']}\nTotal questions: {len(quiz['questions'])}")
     await send_next(context, chat.id)
 
 async def send_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
@@ -142,13 +141,13 @@ async def send_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     if index >= len(quiz['questions']):
         scores = active['scores']
-        text = "🏆 Leaderboard 🏆\n"
+        text = "🏆 Quiz khatam! Leaderboard 🏆\n"
         if not scores:
             text += "Koi nahi khela 😢"
         else:
             sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-            for i, (uid, score) in enumerate(sorted_scores, 1):
-                text += f"{i}. User {uid}: {score}/{len(quiz['questions'])}\n"
+            for pos, (uid, score) in enumerate(sorted_scores, 1):
+                text += f"{pos}. User {uid}: {score}/{len(quiz['questions'])}\n"
         await context.bot.send_message(chat_id, text)
         context.chat_data.pop('active_quiz', None)
         return
