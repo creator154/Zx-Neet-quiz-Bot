@@ -1,3 +1,17 @@
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Database
+quiz.db
+
+# Environment
 .env
+
+# VS Code
+.vscode/
+
+# Mac
+.DS_Store
