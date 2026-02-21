@@ -1,208 +1,207 @@
-# bot.py - Official-style NEET Quiz Bot for Telegram
-# Private create + Group play + Menu + Timer + Leaderboard
-
-import logging
 import os
+import sqlite3
 import uuid
-from telegram import Update, Poll, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, 
+    Poll,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     PollAnswerHandler,
     ConversationHandler,
-    filters,
     ContextTypes,
-    CallbackQueryHandler,
+    filters,
 )
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
+TOKEN = os.getenv("BOT_TOKEN")
 
-TITLE, DESC, QUESTION = range(3)
-QUESTION_TIMER = 30  # seconds per question
+# ---------------- DATABASE ----------------
+conn = sqlite3.connect("quiz.db", check_same_thread=False)
+cursor = conn.cursor()
 
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-if not TOKEN:
-    raise ValueError("TELEGRAM_TOKEN not set in environment variables!")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS quizzes (
+    quiz_id TEXT,
+    title TEXT
+)
+""")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    welcome = f"Hi {user.first_name}! 👋\nThis bot helps you create quizzes with multiple choice questions."
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS questions (
+    quiz_id TEXT,
+    question TEXT,
+    opt1 TEXT,
+    opt2 TEXT,
+    opt3 TEXT,
+    opt4 TEXT,
+    correct INTEGER,
+    timer INTEGER
+)
+""")
 
-    keyboard = [
-        [KeyboardButton("Create New Quiz")],
-        [KeyboardButton("View My Quizzes")],
-        [KeyboardButton("Start quiz in group")],
-        [KeyboardButton("Language: English")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS scores (
+    quiz_id TEXT,
+    user_id INTEGER,
+    username TEXT,
+    score INTEGER
+)
+""")
+conn.commit()
 
-    await update.message.reply_text(welcome, reply_markup=reply_markup)
+# --------------- STATES ----------------
+TITLE, QUESTION, OPTIONS, CORRECT, TIMER = range(5)
 
-    inline = [
-        [InlineKeyboardButton("Create New Quiz", callback_data="create")],
-        [InlineKeyboardButton("View My Quizzes", callback_data="view")],
-    ]
-    await update.message.reply_text("Quick actions:", reply_markup=InlineKeyboardMarkup(inline))
+# --------------- CREATE QUIZ FLOW ----------------
 
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
+async def newquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send quiz title:")
+    context.user_data["quiz_id"] = str(uuid.uuid4())[:8]
+    return TITLE
 
-    if query.data == "create":
-        await query.edit_message_text("Quiz title bhejo (e.g., NEET Biology Quiz)")
-        return TITLE
-
-    elif query.data == "view":
-        quizzes = context.bot_data.get('quizzes', {})
-        text = "Your quizzes:\n" + "\n".join([f"• {q['title']} (ID: {qid})" for qid, q in quizzes.items()]) if quizzes else "No quizzes yet"
-        await query.edit_message_text(text)
-
-async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data['quiz_title'] = update.message.text
-    await update.message.reply_text("Description bhejo ya /skip")
-    return DESC
-
-async def save_desc_or_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.message.text != '/skip':
-        context.user_data['quiz_desc'] = update.message.text
-    await update.message.reply_text("Ab quiz mode poll bhej do (correct answer mark kar ke, explanation daal do)")
-    context.user_data['questions'] = []
+async def get_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["title"] = update.message.text
+    cursor.execute("INSERT INTO quizzes VALUES (?,?)",
+                   (context.user_data["quiz_id"], update.message.text))
+    conn.commit()
+    await update.message.reply_text("Send question:")
     return QUESTION
 
-async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    poll = update.message.poll
-    if poll.type != Poll.QUIZ:
-        await update.message.reply_text("Sirf quiz mode poll bhejo!")
-        return QUESTION
+async def get_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["question"] = update.message.text
+    await update.message.reply_text("Send 4 options separated by |")
+    return OPTIONS
 
-    question_data = {
-        'question': poll.question,
-        'options': [opt.text for opt in poll.options],
-        'correct_option_id': poll.correct_option_id,
-        'explanation': poll.explanation or "No explanation"
-    }
-    context.user_data['questions'].append(question_data)
+async def get_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    opts = update.message.text.split("|")
+    context.user_data["options"] = [o.strip() for o in opts]
+    await update.message.reply_text("Send correct option number (0-3)")
+    return CORRECT
 
-    await update.message.reply_text(f"Question saved! ({len(context.user_data['questions'])} ab tak)\nNext poll ya /done")
-    return QUESTION
+async def get_correct(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["correct"] = int(update.message.text)
+    await update.message.reply_text("Send timer in seconds:")
+    return TIMER
 
-async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    questions = context.user_data.get('questions', [])
-    if not questions:
-        await update.message.reply_text("Koi question nahi add kiya.")
-        return ConversationHandler.END
+async def get_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    quiz_id = context.user_data["quiz_id"]
+    q = context.user_data["question"]
+    o = context.user_data["options"]
+    c = context.user_data["correct"]
+    t = int(update.message.text)
 
-    title = context.user_data.get('quiz_title', 'Untitled')
-    desc = context.user_data.get('quiz_desc', '')
+    cursor.execute("INSERT INTO questions VALUES (?,?,?,?,?,?,?,?)",
+                   (quiz_id, q, o[0], o[1], o[2], o[3], c, t))
+    conn.commit()
 
-    quiz_id = str(uuid.uuid4())[:8]
+    link = f"https://t.me/{context.bot.username}?start={quiz_id}"
 
-    context.bot_data.setdefault('quizzes', {})[quiz_id] = {
-        'title': title,
-        'desc': desc,
-        'questions': questions
-    }
-
-    await update.message.reply_text(f"Quiz ban gaya! 🎉\nID: {quiz_id}\nGroup mein /startquiz {quiz_id}")
-
-    context.user_data.clear()
+    keyboard = [[InlineKeyboardButton("Add Another Question", callback_data="add")]]
+    await update.message.reply_text(
+        f"Question saved ✅\nShare this link:\n{link}",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return ConversationHandler.END
 
-async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat = update.effective_chat
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Sirf group mein!")
+# --------------- START QUIZ ----------------
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.args:
+        quiz_id = context.args[0]
+        context.chat_data["quiz_id"] = quiz_id
+        cursor.execute("SELECT * FROM questions WHERE quiz_id=?",
+                       (quiz_id,))
+        context.chat_data["questions"] = cursor.fetchall()
+        context.chat_data["index"] = 0
+        await send_question(update, context)
+
+async def send_question(update, context):
+    questions = context.chat_data["questions"]
+    index = context.chat_data["index"]
+
+    if index >= len(questions):
+        await show_result(update, context)
         return
 
-    if not context.args:
-        await update.message.reply_text("/startquiz <quiz_id>")
-        return
-
-    quiz_id = context.args[0]
-    quiz = context.bot_data.get('quizzes', {}).get(quiz_id)
-    if not quiz:
-        await update.message.reply_text("Quiz nahi mila")
-        return
-
-    context.chat_data['active_quiz'] = {'quiz': quiz, 'index': 0, 'scores': {}}
-
-    await update.message.reply_text(f"Quiz shuru: {quiz['title']}\nTotal questions: {len(quiz['questions'])}")
-    await send_next(context, chat.id)
-
-async def send_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    active = context.chat_data.get('active_quiz')
-    if not active:
-        return
-
-    index = active['index']
-    quiz = active['quiz']
-
-    if index >= len(quiz['questions']):
-        scores = active['scores']
-        text = "🏆 Quiz khatam! Leaderboard 🏆\n"
-        if not scores:
-            text += "Koi nahi khela 😢"
-        else:
-            sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-            for pos, (uid, score) in enumerate(sorted_scores, 1):
-                text += f"{pos}. User {uid}: {score}/{len(quiz['questions'])}\n"
-        await context.bot.send_message(chat_id, text)
-        context.chat_data.pop('active_quiz', None)
-        return
-
-    q = quiz['questions'][index]
-
-    await context.bot.send_poll(
-        chat_id=chat_id,
-        question=q['question'],
-        options=q['options'],
+    q = questions[index]
+    poll = await context.bot.send_poll(
+        chat_id=update.effective_chat.id,
+        question=q[1],
+        options=[q[2], q[3], q[4], q[5]],
         type=Poll.QUIZ,
-        correct_option_id=q['correct_option_id'],
-        explanation=q['explanation'],
-        is_anonymous=False,
-        open_period=QUESTION_TIMER
+        correct_option_id=q[6],
+        open_period=q[7],
+        is_anonymous=False
     )
 
-    active['index'] += 1
+    context.bot_data[poll.poll.id] = {
+        "quiz_id": q[0],
+        "correct": q[6]
+    }
 
-async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    poll_answer = update.poll_answer
-    user_id = poll_answer.user.id
-    chat_id = update.effective_chat.id
+# --------------- ANSWER TRACK ----------------
 
-    active = context.chat_data.get('active_quiz')
-    if not active:
+async def poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = update.poll_answer
+    poll_id = answer.poll_id
+
+    data = context.bot_data.get(poll_id)
+    if not data:
         return
 
-    index = active['index'] - 1
-    q = active['quiz']['questions'][index]
-    selected = poll_answer.option_ids[0] if poll_answer.option_ids else None
+    correct = data["correct"]
+    quiz_id = data["quiz_id"]
 
-    if selected == q['correct_option_id']:
-        active['scores'][user_id] = active['scores'].get(user_id, 0) + 1
+    if answer.option_ids[0] == correct:
+        cursor.execute("""
+        INSERT INTO scores VALUES (?,?,?,?)
+        """, (quiz_id,
+              answer.user.id,
+              answer.user.username,
+              1))
+        conn.commit()
 
-def main():
-    application = Application.builder().token(TOKEN).build()
+# --------------- RESULT ----------------
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("create", start)],
-        states={
-            TITLE: [MessageHandler(filters.TEXT & \~filters.COMMAND, save_title)],
-            DESC: [MessageHandler(filters.TEXT & \~filters.COMMAND, save_desc_or_skip)],
-            QUESTION: [MessageHandler(filters.POLL, save_question), CommandHandler("done", done)],
-        },
-        fallbacks=[]
-    )
+async def show_result(update, context):
+    quiz_id = context.chat_data["quiz_id"]
+    cursor.execute("""
+    SELECT username, SUM(score) 
+    FROM scores WHERE quiz_id=? 
+    GROUP BY user_id 
+    ORDER BY SUM(score) DESC
+    """, (quiz_id,))
+    results = cursor.fetchall()
 
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("startquiz", start_quiz))
-    application.add_handler(PollAnswerHandler(handle_answer))
-    application.add_handler(CallbackQueryHandler(callback_handler))
+    text = "🏆 Quiz Finished!\n\n"
+    for i, r in enumerate(results, 1):
+        text += f"{i}. {r[0]} - {r[1]} pts\n"
 
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    await update.effective_chat.send_message(text)
 
-if __name__ == '__main__':
-    main()
+# --------------- APP ----------------
+
+app = ApplicationBuilder().token(TOKEN).build()
+
+conv = ConversationHandler(
+    entry_points=[CommandHandler("newquiz", newquiz)],
+    states={
+        TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_title)],
+        QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_question)],
+        OPTIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_options)],
+        CORRECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_correct)],
+        TIMER: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_timer)],
+    },
+    fallbacks=[]
+)
+
+app.add_handler(conv)
+app.add_handler(CommandHandler("start", start))
+app.add_handler(PollAnswerHandler(poll_answer))
+
+app.run_polling()
