@@ -1,12 +1,5 @@
 from telegram import Update
-from telegram.ext import (
-    ContextTypes,
-    ConversationHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    CommandHandler,
-    filters,
-)
+from telegram.ext import ContextTypes
 from states import *
 from keyboards import *
 
@@ -20,7 +13,6 @@ async def create(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return WAITING_POLL
 
-
 # Receive poll
 async def receive_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     poll = update.message.poll
@@ -30,88 +22,66 @@ async def receive_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Question Added ({len(context.user_data['questions'])})",
         reply_markup=finish_keyboard()
     )
-
     return WAITING_POLL
-
 
 # Add Question again
 async def add_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     await query.message.reply_text(
         "Send next question:",
         reply_markup=poll_keyboard()
     )
-
     return WAITING_POLL
-
 
 # Finish pressed
 async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    if not context.user_data["questions"]:
+    if not context.user_data.get("questions"):
         await query.message.reply_text("Add at least one question.")
         return WAITING_POLL
-
     await query.message.reply_text(
         "Select timer for questions:",
         reply_markup=timer_keyboard()
     )
-
     return WAITING_TIMER
-
 
 # Timer selected
 async def timer_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    timer = int(query.data.split("_")[1])
-    context.user_data["timer"] = timer
-
+    context.user_data["timer"] = int(query.data.split("_")[1])
     await query.message.reply_text(
         "Shuffle questions?",
         reply_markup=yes_no_keyboard("shuffle_q")
     )
-
     return WAITING_SHUFFLE_Q
-
 
 # Shuffle questions
 async def shuffle_q(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     context.user_data["shuffle_q"] = query.data.endswith("yes")
-
     await query.message.reply_text(
         "Shuffle answer options?",
         reply_markup=yes_no_keyboard("shuffle_opt")
     )
-
     return WAITING_SHUFFLE_OPT
-
 
 # Shuffle options
 async def shuffle_opt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     context.user_data["shuffle_opt"] = query.data.endswith("yes")
-
-    total = len(context.user_data["questions"])
-
+    total = len(context.user_data.get("questions", []))
     await query.message.reply_text(
         f"🎉 Quiz Created Successfully!\n\n"
         f"Total Questions: {total}\n"
         f"Timer: {context.user_data['timer']} sec\n"
         f"Shuffle Questions: {context.user_data['shuffle_q']}\n"
         f"Shuffle Options: {context.user_data['shuffle_opt']}\n\n"
-        f"Now use /startquiz in group to begin."
+        f"Now use /startquiz in your group to begin."
     )
-
     context.user_data.clear()
-    return ConversationHandler.END
+    return -1  # End conversation
