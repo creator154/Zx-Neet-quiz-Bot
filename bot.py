@@ -1,83 +1,119 @@
+"""
+Telegram bot to create and attempt to quizzes.
+"""
+
 import os
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import logging
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
+import quizbot.bot.create_quiz as createQuiz
+import quizbot.bot.attempt_quiz as attemptQuiz
+import quizbot.bot.edit_quiz as editQuiz
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-bot = telebot.TeleBot(BOT_TOKEN)
 
-users = {}
+# Heroku Port
+PORT = int(os.environ.get('PORT', '8443'))
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("Create Quiz ✏️", callback_data="create"))
-    bot.send_message(
-        message.chat.id,
-        "This bot will help you create a quiz with a series of multiple choice questions.",
-        reply_markup=markup
+# Enable logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def print_help(update, _):
+    """Send a message when the command /help is issued."""
+    update.message.reply_text(
+        'Hey! 🙋‍♂️ How can I help you?\n'
+    )
+    update.message.reply_text(
+        'What QuizBot is? 😃\n\n'
+        'With QuizBot you can create quizzes with different question types. 🧐 You can\n'
+        '- ask for a number,\n'
+        '- ask for a string,\n'
+        '- ask für a boolean value,\n'
+        '- create multiple choice questions or\n'
+        '- create multiple choice questions with one correct answer.\n'
+        'If you want to create a new quiz, call /create. 🤓\n'
+        'If you want to attempt a quiz, call /attempt. 🤔\n'
+        'If you want to rename one of your quizzes, call /rename. ✏️\n'
+        'If you want to delete one of your quizzes, call /remove.\n\n'
+        'Have fun! 🥳'
     )
 
-@bot.callback_query_handler(func=lambda call: True)
-def callbacks(call):
-    user_id = call.from_user.id
 
-    if call.data == "create":
-        users[user_id] = {"step": "question", "options": []}
-        bot.send_message(call.message.chat.id, "Send your question:")
+def error(update, context):
+    """Log Errors caused by Updates."""
+    logger.warning('Update "%s" caused error "%s"', update, context.error)
 
-    elif call.data.startswith("correct_"):
-        users[user_id]["correct"] = int(call.data.split("_")[1])
 
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("10 sec", callback_data="time_10"),
-            InlineKeyboardButton("15 sec", callback_data="time_15"),
-            InlineKeyboardButton("30 sec", callback_data="time_30"),
-            InlineKeyboardButton("45 sec", callback_data="time_45"),
-        )
-        bot.send_message(call.message.chat.id, "Select timer ⏳", reply_markup=markup)
+def setup_bot(updater):
+    """Setups the handlers"""
+    dispatch = updater.dispatcher
 
-    elif call.data.startswith("time_"):
-        seconds = int(call.data.split("_")[1])
-        data = users[user_id]
+    # Conversation if the user wants to create a quiz
+    create_states = {
+        'ENTER_TYPE': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_type)],
+        'ENTER_QUESTION': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_question)],
+        'ENTER_ANSWER': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_answer)],
+        'ENTER_POSSIBLE_ANSWER': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_possible_answer)],
+        'ENTER_RANDOMNESS_QUESTION': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_randomness_question)],
+        'ENTER_RANDOMNESS_QUIZ': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_randomness_quiz)],
+        'ENTER_RESULT_AFTER_QUESTION': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_result_after_question)],
+        'ENTER_RESULT_AFTER_QUIZ': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_result_after_quiz)],
+        'ENTER_QUIZ_NAME': [MessageHandler(Filters.text & ~Filters.command, createQuiz.enter_quiz_name)],
+    }
+    create_handler = ConversationHandler(
+        entry_points=[CommandHandler('create', createQuiz.start)],
+        states=create_states,
+        fallbacks=[CommandHandler('cancelCreate', createQuiz.cancel)]
+    )
+    dispatch.add_handler(create_handler)
 
-        bot.send_poll(
-            chat_id=call.message.chat.id,
-            question=data["question"],
-            options=data["options"],
-            type="quiz",
-            correct_option_id=data["correct"],
-            is_anonymous=False,
-            open_period=seconds
-        )
+    # Conversation if the user wants to attempt a quiz
+    attempt_states = {
+        'ENTER_QUIZ': [MessageHandler(Filters.text & ~Filters.command, attemptQuiz.enter_quiz)],
+        'ENTER_ANSWER': [MessageHandler(Filters.text & ~Filters.command, attemptQuiz.enter_answer)]
+    }
+    attempt_handler = ConversationHandler(
+        entry_points=[CommandHandler('attempt', attemptQuiz.start)],
+        states=attempt_states,
+        fallbacks=[CommandHandler('cancelAttempt', attemptQuiz.cancel)]
+    )
+    dispatch.add_handler(attempt_handler)
 
-        bot.send_message(call.message.chat.id, "Quiz Sent ✅")
-        del users[user_id]
+    # Conversation about remove or renaming exisiting quiz
+    edit_states = {
+        'ENTER_NAME': [MessageHandler(Filters.text & ~Filters.command, editQuiz.enter_name_remove)],
+        'ENTER_OLD_NAME': [MessageHandler(Filters.text & ~Filters.command, editQuiz.enter_old_name)],
+        'ENTER_NEW_NAME': [MessageHandler(Filters.text & ~Filters.command, editQuiz.enter_new_name)]
+    }
+    edit_handler = ConversationHandler(
+        entry_points=[CommandHandler('rename', editQuiz.start_rename), CommandHandler(
+            'remove', editQuiz.start_remove)],
+        states=edit_states,
+        fallbacks=[CommandHandler('cancelEdit', editQuiz.cancel_edit)]
+    )
+    dispatch.add_handler(edit_handler)
 
-@bot.message_handler(func=lambda m: m.from_user.id in users)
-def text_handler(message):
-    user_id = message.from_user.id
-    data = users[user_id]
+    # help command
+    dispatch.add_handler(CommandHandler("help", print_help))
 
-    if data["step"] == "question":
-        data["question"] = message.text
-        data["step"] = "options"
-        bot.send_message(message.chat.id, "Send option 1:")
+    # log all errors
+    dispatch.add_error_handler(error)
 
-    elif data["step"] == "options":
-        data["options"].append(message.text)
 
-        if len(data["options"]) < 4:
-            bot.send_message(message.chat.id, f"Send option {len(data['options'])+1}:")
-        else:
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                InlineKeyboardButton("Option 1", callback_data="correct_0"),
-                InlineKeyboardButton("Option 2", callback_data="correct_1"),
-                InlineKeyboardButton("Option 3", callback_data="correct_2"),
-                InlineKeyboardButton("Option 4", callback_data="correct_3"),
-            )
-            bot.send_message(message.chat.id, "Select correct answer:", reply_markup=markup)
+if __name__ == '__main__':
+    # TODO Start message
 
-print("Bot Running...")
-bot.infinity_polling()
+    TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
+    WEBHOOK = os.environ['WEBHOOK']
+
+    updater = Updater(TELEGRAM_TOKEN, use_context=True)
+
+    setup_bot(updater)
+
+    # Start the Bot
+    updater.start_webhook(listen="0.0.0.0",
+                          port=int(PORT),
+                          url_path=TELEGRAM_TOKEN)
+    updater.bot.setWebhook(WEBHOOK + TELEGRAM_TOKEN)
+    updater.idle()
