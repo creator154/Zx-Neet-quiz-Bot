@@ -1,49 +1,30 @@
+import asyncio
+from telegram.ext import ApplicationBuilder
+from handlers import conv_handler
+from database import init_db
 import os
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ConversationHandler,
-    filters,
-)
-from handlers import *
-from states import *
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Heroku config var
 
-def main():
-    if not TOKEN:
-        raise ValueError("BOT_TOKEN missing in Heroku config")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN not set in environment variables")
 
-    app = ApplicationBuilder().token(TOKEN).build()
+# Initialize database
+init_db()
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("create", create)],
-        states={
-            WAITING_POLL: [
-                MessageHandler(filters.POLL, receive_poll),
-                CallbackQueryHandler(add_question, pattern="add_q"),
-                CallbackQueryHandler(finish, pattern="finish"),
-            ],
-            WAITING_TIMER: [
-                CallbackQueryHandler(timer_selected, pattern="timer_"),
-            ],
-            WAITING_SHUFFLE_Q: [
-                CallbackQueryHandler(shuffle_q, pattern="shuffle_q_"),
-            ],
-            WAITING_SHUFFLE_OPT: [
-                CallbackQueryHandler(shuffle_opt, pattern="shuffle_opt_"),
-            ],
-        },
-        fallbacks=[]
-    )
-
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Add ConversationHandler
     app.add_handler(conv_handler)
-
+    
     print("Bot running...")
-    app.run_polling(drop_pending_updates=True)
 
+    # Run polling safely
+    await app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        print("Asyncio loop error:", e)
