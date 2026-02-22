@@ -1,27 +1,14 @@
-from telegram import (
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-    KeyboardButtonPollType,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton
-)
+from telegram import ReplyKeyboardMarkup, KeyboardButton, KeyboardButtonPollType, InlineKeyboardMarkup, InlineKeyboardButton
 
 def poll_keyboard():
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(
-            text="Create a question",
-            request_poll=KeyboardButtonPollType(type="quiz")
-        )]],
-        resize_keyboard=True
-    )
+    keyboard = [
+        [KeyboardButton(text="Create a question", request_poll=KeyboardButtonPollType(type="quiz"))]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def finish_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("➕ Add Question", callback_data="add_q"),
-            InlineKeyboardButton("✅ Finish & Publish", callback_data="finish")
-        ]
-    ])
+    keyboard = [[InlineKeyboardButton("✅ Finish & Publish", callback_data="finish")]]
+    return InlineKeyboardMarkup(keyboard)
 
 def timer_keyboard():
     return InlineKeyboardMarkup([
@@ -36,10 +23,10 @@ def timer_keyboard():
         ]
     ])
 
-def yes_no_keyboard(prefix):
+def shuffle_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Yes", callback_data=f"{prefix}_yes"),
-            InlineKeyboardButton("No", callback_data=f"{prefix}_no"),
+            InlineKeyboardButton("Yes", callback_data="shuffle_yes"),
+            InlineKeyboardButton("No", callback_data="shuffle_no")
         ]
     ])
