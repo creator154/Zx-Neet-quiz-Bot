@@ -1,5 +1,5 @@
-# bot.py - Telegram Quiz Bot like @quizbot (Private create + Poll timer + Group leaderboard)
-# Heroku ready - no syntax error, clean
+# bot.py - Telegram Quiz Bot (like @quizbot) - Private create, poll timer, group leaderboard
+# Heroku ready - CLEAN, no syntax error
 
 import logging
 import os
@@ -20,7 +20,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 TITLE, DESC, QUESTION = range(3)
-QUESTION_TIMER = 30
+QUESTION_TIMER = 30  # seconds per question
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TOKEN:
@@ -36,11 +36,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
     await update.message.reply_text(
-        "Hi! This bot helps you create quizzes with multiple choice questions.\nChoose an option:",
+        "Hi! This bot helps you create quizzes with multiple choice questions.\nChoose:",
         reply_markup=reply_markup
     )
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
 
@@ -56,7 +56,7 @@ async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_desc_or_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.text != '/skip':
         context.user_data['desc'] = update.message.text
-    await update.message.reply_text("Now send quiz polls (Quiz mode ON, mark correct answer)")
+    await update.message.reply_text("Send quiz polls (Quiz mode ON, mark correct answer)")
     context.user_data['questions'] = []
     return QUESTION
 
@@ -80,7 +80,7 @@ async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     qs = context.user_data.get('questions', [])
     if not qs:
-        await update.message.reply_text("No questions added.")
+        await update.message.reply_text("No questions added")
         return ConversationHandler.END
 
     title = context.user_data.get('title', 'Untitled')
@@ -94,7 +94,7 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         'questions': qs
     }
 
-    await update.message.reply_text(f"Quiz created!\nID: {quiz_id}\nUse in group: /startquiz {quiz_id}")
+    await update.message.reply_text(f"Quiz created!\nID: {quiz_id}\nIn group: /startquiz {quiz_id}")
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -128,7 +128,7 @@ async def send_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     if index >= len(quiz['questions']):
         scores = active['scores']
-        text = "Leaderboard:\n" + "\n".join([f"{uid}: {score}" for uid, score in scores.items()])
+        text = "Leaderboard:\n" + "\n".join([f"{uid}: {score}" for uid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True)])
         await context.bot.send_message(chat_id, text)
         context.chat_data.pop('active_quiz', None)
         return
