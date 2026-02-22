@@ -1,18 +1,9 @@
-# Python cache
 __pycache__/
 *.pyc
 *.pyo
-
-# Virtual environment
 venv/
 .env/
-
-# Database
 quiz.db
-
-# OS files
 .DS_Store
 Thumbs.db
-
-# Logs
 *.log
