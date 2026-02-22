@@ -1,10 +1,8 @@
-# bot.py - Telegram Quiz Bot (official-like) - Poll create + Inline buttons + Group start
-# Heroku ready - CLEAN
-
+# bot.py - Telegram Quiz Bot (official-like) - Poll button after description
 import logging
 import os
 import uuid
-from telegram import Update, Poll, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, KeyboardButtonPollType, Poll
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -13,14 +11,13 @@ from telegram.ext import (
     ConversationHandler,
     filters,
     ContextTypes,
-    CallbackQueryHandler,
 )
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TITLE, DESC, QUESTION = range(3)
-QUESTION_TIMER = 30  # default per question
+QUESTION_TIMER = 30
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TOKEN:
@@ -44,25 +41,19 @@ async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_desc_or_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.text != '/skip':
         context.user_data['desc'] = update.message.text
+
     context.user_data['questions'] = []
 
-    # Inline button to add first question
-    keyboard = [
-        [InlineKeyboardButton("📝 Add First Question", callback_data="add_question")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # ✅ Direct poll button after description
+    keyboard = [[KeyboardButton("📝 Add Question", request_poll=KeyboardButtonPollType(type="quiz"))]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text("Now add your first question using the button below:", reply_markup=reply_markup)
     return QUESTION
-
-async def add_question_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("Send a quiz poll (Quiz mode ON, mark correct answer)")
 
 async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     poll = update.message.poll
     if poll.type != Poll.QUIZ:
-        await update.message.reply_text("Send quiz poll only!")
+        await update.message.reply_text("Only Quiz mode poll allowed!")
         return QUESTION
 
     q = {
@@ -73,19 +64,8 @@ async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     }
     context.user_data['questions'].append(q)
 
-    # Inline buttons after each question
-    keyboard = [
-        [InlineKeyboardButton("➕ Add Another Question", callback_data="add_question")],
-        [InlineKeyboardButton("✅ Done", callback_data="done_quiz")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(f"Saved ({len(context.user_data['questions'])}) questions.", reply_markup=reply_markup)
+    await update.message.reply_text(f"Saved ({len(context.user_data['questions'])}) question(s)\nSend next poll or /done")
     return QUESTION
-
-async def done_quiz_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    return await done(query, context)
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     qs = context.user_data.get('questions', [])
@@ -95,7 +75,6 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     title = context.user_data.get('title', 'Untitled')
     desc = context.user_data.get('desc', '')
-
     quiz_id = str(uuid.uuid4())[:8]
 
     context.bot_data.setdefault('quizzes', {})[quiz_id] = {
@@ -104,24 +83,16 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         'questions': qs
     }
 
-    # Summary + inline buttons
-    summary = f"Quiz created!\n\n📁 {title}\n{desc or ''}\nTotal questions: {len(qs)}\nQuiz ID: {quiz_id}"
-    keyboard = [
-        [InlineKeyboardButton("▶️ Start Quiz", callback_data=f"start_{quiz_id}")],
-        [InlineKeyboardButton("Start in Group", switch_inline_query_current_chat=f"startquiz {quiz_id}")],
-        [InlineKeyboardButton("Share Quiz", switch_inline_query_current_chat=f"share {quiz_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(f"Quiz created!\nID: {quiz_id}\nStart in group using /startquiz {quiz_id}")
 
-    await update.message.reply_text(summary, reply_markup=reply_markup)
     context.user_data.clear()
     return ConversationHandler.END
 
-# ----------------- Quiz Play -----------------
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Use in a group chat only!")
+        await update.message.reply_text("Use in group only")
         return
+
     if not context.args:
         await update.message.reply_text("/startquiz <quiz_id>")
         return
@@ -140,12 +111,13 @@ async def send_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     active = context.chat_data.get('active_quiz')
     if not active:
         return
+
     index = active['index']
     quiz = active['quiz']
 
     if index >= len(quiz['questions']):
         scores = active['scores']
-        text = "🏆 Leaderboard:\n" + "\n".join([f"{uid}: {score}" for uid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True)])
+        text = "Leaderboard:\n" + "\n".join([f"{uid}: {score}" for uid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True)])
         await context.bot.send_message(chat_id, text)
         context.chat_data.pop('active_quiz', None)
         return
@@ -176,20 +148,6 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if selected == q['correct']:
         active['scores'][user_id] = active['scores'].get(user_id, 0) + 1
 
-# ----------------- Callback Query -----------------
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if data == "add_question":
-        await query.edit_message_text("Send quiz poll (Quiz mode ON, mark correct answer)")
-    elif data == "done_quiz":
-        await done_quiz_button(update, context)
-    elif data.startswith("start_"):
-        quiz_id = data.split("_")[1]
-        await query.edit_message_text(f"Quiz started: {quiz_id}")
-
 # ----------------- Main -----------------
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -201,14 +159,13 @@ def main():
             DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_desc_or_skip)],
             QUESTION: [MessageHandler(filters.POLL, save_question)],
         },
-        fallbacks=[]
+        fallbacks=[CommandHandler("done", done)]
     )
 
     app.add_handler(conv)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("startquiz", start_quiz))
     app.add_handler(PollAnswerHandler(handle_answer))
-    app.add_handler(CallbackQueryHandler(callback_handler))
 
     app.run_polling()
 
