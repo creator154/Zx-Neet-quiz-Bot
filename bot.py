@@ -1,5 +1,5 @@
 # bot.py - Clean Telegram Quiz Bot (like @quizbot) - Private create + Poll timer + Group leaderboard
-# Heroku ready - No crash, no backslash error
+# Heroku ready - No crash, no syntax errors
 
 import logging
 import os
@@ -15,16 +15,21 @@ from telegram.ext import (
     ContextTypes,
 )
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
+# States for ConversationHandler
 TITLE, DESC, QUESTION = range(3)
 QUESTION_TIMER = 30  # seconds per question
 
+# Bot token from Heroku Config Var
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_TOKEN not set!")
 
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
         [KeyboardButton("Create New Quiz")],
@@ -37,26 +42,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup
     )
 
+# Create new quiz
 async def create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Quiz title bhejo")
+    await update.message.reply_text("Send the quiz title:")
     return TITLE
 
 async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['title'] = update.message.text
-    await update.message.reply_text("Description bhejo ya /skip")
+    await update.message.reply_text("Send description or /skip:")
     return DESC
 
 async def save_desc_or_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.text != '/skip':
         context.user_data['desc'] = update.message.text
-    await update.message.reply_text("Ab quiz mode poll bhej do (correct answer mark kar ke)")
+    await update.message.reply_text("Now send a quiz poll (mark correct answer) for the first question:")
     context.user_data['questions'] = []
     return QUESTION
 
 async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     poll = update.message.poll
     if poll.type != Poll.QUIZ:
-        await update.message.reply_text("Sirf quiz mode poll bhejo!")
+        await update.message.reply_text("Please send only quiz-type polls!")
         return QUESTION
 
     q = {
@@ -67,13 +73,13 @@ async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     }
     context.user_data['questions'].append(q)
 
-    await update.message.reply_text(f"Saved ({len(context.user_data['questions'])})\nNext poll ya /done")
+    await update.message.reply_text(f"Saved ({len(context.user_data['questions'])}) questions. Send next poll or /done")
     return QUESTION
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     qs = context.user_data.get('questions', [])
     if not qs:
-        await update.message.reply_text("No questions added")
+        await update.message.reply_text("No questions added.")
         return ConversationHandler.END
 
     title = context.user_data.get('title', 'Untitled')
@@ -87,14 +93,14 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         'questions': qs
     }
 
-    await update.message.reply_text(f"Quiz created!\nID: {quiz_id}\nGroup mein: /startquiz {quiz_id}")
-
+    await update.message.reply_text(f"Quiz created!\nID: {quiz_id}\nStart in group using /startquiz {quiz_id}")
     context.user_data.clear()
     return ConversationHandler.END
 
+# Start quiz in group
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("Group mein use karo")
+        await update.message.reply_text("Use this command in a group!")
         return
 
     if not context.args:
@@ -104,7 +110,7 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     quiz_id = context.args[0]
     quiz = context.bot_data.get('quizzes', {}).get(quiz_id)
     if not quiz:
-        await update.message.reply_text("Quiz not found")
+        await update.message.reply_text("Quiz not found.")
         return
 
     context.chat_data['active_quiz'] = {'quiz': quiz, 'index': 0, 'scores': {}}
@@ -155,14 +161,15 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if selected == q['correct']:
         active['scores'][user_id] = active['scores'].get(user_id, 0) + 1
 
+# Main entry
 def main():
     app = Application.builder().token(TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("create", create)],
         states={
-            TITLE: [MessageHandler(filters.TEXT & \~filters.COMMAND, save_title)],
-            DESC: [MessageHandler(filters.TEXT & \~filters.COMMAND, save_desc_or_skip)],
+            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_title)],
+            DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_desc_or_skip)],
             QUESTION: [MessageHandler(filters.POLL, save_question), CommandHandler("done", done)],
         },
         fallbacks=[]
@@ -173,6 +180,7 @@ def main():
     app.add_handler(CommandHandler("startquiz", start_quiz))
     app.add_handler(PollAnswerHandler(handle_answer))
 
+    logger.info("Bot running...")
     app.run_polling()
 
 if __name__ == '__main__':
