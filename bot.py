@@ -8,11 +8,12 @@ import uuid
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# -------------------- DATABASE --------------------
 DATABASE_URL = os.environ.get("DATABASE_URL")
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 cur = conn.cursor()
 
-# Create table
+# Create quizzes table if not exists
 cur.execute("""
 CREATE TABLE IF NOT EXISTS quizzes (
     id SERIAL PRIMARY KEY,
@@ -28,27 +29,28 @@ CREATE TABLE IF NOT EXISTS quizzes (
 """)
 conn.commit()
 
+# -------------------- USER STATE --------------------
 user_states = {}
 
-# ---------------- PRIVATE START ----------------
+# -------------------- PRIVATE CHAT --------------------
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("Create Quiz ✏️", callback_data="create"))
     bot.send_message(
         message.chat.id,
-        "This bot will help you create a quiz with multiple choice questions.",
+        "Welcome to Neet Quiz Bot!\nCreate quizzes in private, send polls to groups.",
         reply_markup=markup
     )
 
-# ---------------- CREATE FLOW ----------------
+# -------------------- CREATE FLOW --------------------
 @bot.callback_query_handler(func=lambda call: call.data == "create")
 def create(call):
     user_states[call.from_user.id] = {"step": "question", "options": []}
     bot.send_message(call.message.chat.id, "Send your question:")
 
 @bot.message_handler(func=lambda m: m.from_user.id in user_states)
-def text_handler(message):
+def handle_text(message):
     user_id = message.from_user.id
     data = user_states[user_id]
 
@@ -59,7 +61,6 @@ def text_handler(message):
 
     elif data["step"] == "options":
         data["options"].append(message.text)
-
         if len(data["options"]) < 4:
             bot.send_message(message.chat.id, f"Send option {len(data['options'])+1}:")
         else:
@@ -74,7 +75,7 @@ def text_handler(message):
             bot.send_message(message.chat.id, "Select correct answer:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("correct_"))
-def correct_handler(call):
+def handle_correct(call):
     user_id = call.from_user.id
     data = user_states[user_id]
     data["correct"] = int(call.data.split("_")[1])
@@ -86,16 +87,16 @@ def correct_handler(call):
         InlineKeyboardButton("30 sec", callback_data="timer_30"),
         InlineKeyboardButton("45 sec", callback_data="timer_45"),
     )
-
     data["step"] = "timer"
     bot.send_message(call.message.chat.id, "Select timer ⏳", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("timer_"))
-def timer_handler(call):
+def handle_timer(call):
     user_id = call.from_user.id
     data = user_states[user_id]
     seconds = int(call.data.split("_")[1])
 
+    # Save to database
     cur.execute("""
         INSERT INTO quizzes (creator_id, question, option1, option2, option3, option4, correct, timer)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
@@ -111,11 +112,11 @@ def timer_handler(call):
     ))
     conn.commit()
 
-    bot.send_message(call.message.chat.id, "Quiz Saved ✅\n\nNow go to group and type:\n@Neet_Quizer_Bot")
+    bot.send_message(call.message.chat.id, "Quiz Saved ✅\nNow go to group and type:\n@Neet_Quizer_Bot")
 
     del user_states[user_id]
 
-# ---------------- INLINE MODE ----------------
+# -------------------- INLINE QUERY --------------------
 @bot.inline_query_handler(func=lambda query: True)
 def inline_query(query):
     cur.execute("SELECT id, question FROM quizzes WHERE creator_id=%s", (query.from_user.id,))
@@ -128,23 +129,26 @@ def inline_query(query):
                 id=str(uuid.uuid4()),
                 title=q[1],
                 description="Send this quiz",
-                input_message_content=InputTextMessageContent(
-                    f"/sendquiz {q[0]}"
-                )
+                input_message_content=InputTextMessageContent(f"/sendquiz {q[0]}")
             )
         )
 
     bot.answer_inline_query(query.id, results)
 
-# ---------------- SEND POLL IN GROUP ----------------
+# -------------------- SEND POLL IN GROUP --------------------
 @bot.message_handler(commands=['sendquiz'])
 def send_quiz(message):
-    quiz_id = message.text.split()[1]
+    try:
+        quiz_id = int(message.text.split()[1])
+    except:
+        bot.send_message(message.chat.id, "Invalid quiz ID.")
+        return
 
     cur.execute("SELECT * FROM quizzes WHERE id=%s", (quiz_id,))
     q = cur.fetchone()
 
     if not q:
+        bot.send_message(message.chat.id, "Quiz not found.")
         return
 
     bot.send_poll(
