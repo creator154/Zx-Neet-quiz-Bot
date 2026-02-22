@@ -1,89 +1,104 @@
 import os
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
-import psycopg2
-from database import setup
-
-# Setup database tables
-setup()
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-cur = conn.cursor()
+user_data = {}
 
-user_states = {}
-
-# START COMMAND
+# START
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, "Welcome to Advanced Quiz Bot!\n\nUse /create to create new quiz.")
+    bot.send_message(message.chat.id, "Use /createquiz to create poll quiz.")
 
 # CREATE QUIZ
-@bot.message_handler(commands=['create'])
+@bot.message_handler(commands=['createquiz'])
 def create_quiz(message):
-    user_states[message.from_user.id] = {"step": "title"}
-    bot.send_message(message.chat.id, "Send Quiz Title:")
+    user_data[message.from_user.id] = {
+        "step": "question",
+        "options": []
+    }
+    bot.send_message(message.chat.id, "Send your Question:")
 
-# HANDLE TEXT
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
+# TEXT HANDLER
+@bot.message_handler(func=lambda m: True)
+def text_handler(message):
     user_id = message.from_user.id
     
-    if user_id not in user_states:
+    if user_id not in user_data:
         return
     
-    state = user_states[user_id]
+    data = user_data[user_id]
+
+    # STEP 1 - Question
+    if data["step"] == "question":
+        data["question"] = message.text
+        data["step"] = "options"
+        bot.send_message(message.chat.id, "Send Option 1:")
     
-    # TITLE STEP
-    if state["step"] == "title":
-        state["title"] = message.text
-        state["step"] = "description"
-        bot.send_message(message.chat.id, "Send Quiz Description:")
-    
-    # DESCRIPTION STEP
-    elif state["step"] == "description":
-        state["description"] = message.text
-        state["step"] = "timer"
-        bot.send_message(message.chat.id, "Send Timer in seconds (example: 30):")
-    
-    # TIMER STEP
-    elif state["step"] == "timer":
-        try:
-            timer = int(message.text)
-            state["timer"] = timer
-            
-            # Save quiz
-            cur.execute(
-                "INSERT INTO quizzes (creator_id, title, description, timer, shuffle) VALUES (%s, %s, %s, %s, %s)",
-                (user_id, state["title"], state["description"], state["timer"], "no")
-            )
-            conn.commit()
-            
-            bot.send_message(message.chat.id, "Quiz Created Successfully ✅")
-            del user_states[user_id]
+    # STEP 2 - Options
+    elif data["step"] == "options":
+        data["options"].append(message.text)
         
-        except:
-            bot.send_message(message.chat.id, "Please send valid number.")
+        if len(data["options"]) < 4:
+            bot.send_message(message.chat.id, f"Send Option {len(data['options'])+1}:")
+        else:
+            # Ask correct answer
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("Option 1", callback_data="correct_0"),
+                InlineKeyboardButton("Option 2", callback_data="correct_1"),
+                InlineKeyboardButton("Option 3", callback_data="correct_2"),
+                InlineKeyboardButton("Option 4", callback_data="correct_3"),
+            )
+            data["step"] = "correct"
+            bot.send_message(message.chat.id, "Select Correct Answer:", reply_markup=markup)
 
-# LIST QUIZZES
-@bot.message_handler(commands=['myquiz'])
-def my_quiz(message):
-    user_id = message.from_user.id
-    cur.execute("SELECT id, title FROM quizzes WHERE creator_id=%s", (user_id,))
-    quizzes = cur.fetchall()
+# CALLBACK HANDLER
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    user_id = call.from_user.id
     
-    if not quizzes:
-        bot.send_message(message.chat.id, "No quizzes found.")
+    if user_id not in user_data:
         return
     
-    text = "Your Quizzes:\n\n"
-    for q in quizzes:
-        text += f"ID: {q[0]} | {q[1]}\n"
-    
-    bot.send_message(message.chat.id, text)
+    data = user_data[user_id]
+
+    # STEP 3 - Correct Option
+    if call.data.startswith("correct_"):
+        correct_index = int(call.data.split("_")[1])
+        data["correct"] = correct_index
+        
+        # Ask timer
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("10 sec", callback_data="timer_10"),
+            InlineKeyboardButton("15 sec", callback_data="timer_15"),
+            InlineKeyboardButton("30 sec", callback_data="timer_30"),
+            InlineKeyboardButton("45 sec", callback_data="timer_45"),
+        )
+        data["step"] = "timer"
+        bot.send_message(call.message.chat.id, "Select Timer:", reply_markup=markup)
+
+    # STEP 4 - Timer
+    elif call.data.startswith("timer_"):
+        seconds = int(call.data.split("_")[1])
+
+        bot.send_poll(
+            chat_id=call.message.chat.id,
+            question=data["question"],
+            options=data["options"],
+            type="quiz",
+            correct_option_id=data["correct"],
+            is_anonymous=False,
+            open_period=seconds
+        )
+
+        bot.send_message(call.message.chat.id, "Quiz Sent Successfully ✅")
+
+        # Clear user data
+        del user_data[user_id]
 
 print("Bot Running...")
 bot.infinity_polling()
