@@ -1,5 +1,4 @@
 import os
-
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -8,31 +7,14 @@ from telegram.ext import (
     ConversationHandler,
     filters,
 )
-
-from handlers import (
-    create,
-    receive_poll,
-    add_question,
-    finish,
-    timer_selected,
-    shuffle_q,
-    shuffle_opt,
-)
-
-from states import (
-    WAITING_POLL,
-    WAITING_TIMER,
-    WAITING_SHUFFLE_Q,
-    WAITING_SHUFFLE_OPT,
-)
-
+from handlers import *
+from states import *
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-
 def main():
     if not TOKEN:
-        raise ValueError("BOT_TOKEN not found in environment variables")
+        raise ValueError("BOT_TOKEN missing in Heroku config")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -54,13 +36,13 @@ def main():
                 CallbackQueryHandler(shuffle_opt, pattern="shuffle_opt_"),
             ],
         },
-        fallbacks=[],
+        fallbacks=[]
     )
 
     app.add_handler(conv_handler)
 
-    print("Bot is running...")
-    app.run_polling()
+    print("Bot running...")
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
