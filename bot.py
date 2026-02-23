@@ -9,6 +9,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     KeyboardButton,
     KeyboardButtonPollType,
 )
@@ -17,8 +18,8 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     PollAnswerHandler,
-    ConversationHandler,
     CallbackQueryHandler,
+    ConversationHandler,
     ContextTypes,
     filters,
 )
@@ -26,9 +27,8 @@ from telegram.ext import (
 # ---------------- CONFIG ---------------- #
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-
 if not TOKEN:
-    raise ValueError("TELEGRAM_TOKEN not set in Heroku config")
+    raise ValueError("TELEGRAM_TOKEN not set!")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -46,7 +46,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
 
-# ---------------- CREATE FLOW ---------------- #
+# ---------------- CREATE ---------------- #
 
 async def create(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Send quiz title:")
@@ -56,7 +56,7 @@ async def create(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["title"] = update.message.text
     context.user_data["questions"] = []
-    await update.message.reply_text("Send description or type /skip")
+    await update.message.reply_text("Send description or /skip")
     return DESC
 
 
@@ -124,10 +124,26 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["timer"] = int(update.message.text)
-    return await save_quiz(update, context)
+
+    keyboard = [
+        [KeyboardButton("Shuffle All")],
+        [KeyboardButton("No Shuffle")],
+    ]
+
+    await update.message.reply_text(
+        "Shuffle questions?",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+    )
+
+    return SHUFFLE
 
 
-async def save_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def set_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["shuffle"] = update.message.text
+
+    if context.user_data["shuffle"] == "Shuffle All":
+        random.shuffle(context.user_data["questions"])
+
     quiz_id = str(uuid.uuid4())[:8]
 
     context.bot_data.setdefault("quizzes", {})[quiz_id] = {
@@ -139,7 +155,10 @@ async def save_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buttons = [
         [InlineKeyboardButton("Start Quiz", callback_data=f"start_{quiz_id}")],
-        [InlineKeyboardButton("Start In Group", switch_inline_query=f"start {quiz_id}")],
+        [InlineKeyboardButton(
+            "Start In Group",
+            url=f"https://t.me/{context.bot.username}?startgroup={quiz_id}"
+        )],
     ]
 
     await update.message.reply_text(
@@ -166,21 +185,25 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.chat_data["quiz"] = {
         "index": 0,
-        "score": {},
         "data": quiz,
     }
 
+    # REMOVE BUTTONS AFTER CLICK
     await query.edit_message_text(f"Starting: {quiz['title']}")
 
     await send_question(context, query.message.chat_id)
 
 
 async def send_question(context, chat_id):
-    quiz_session = context.chat_data["quiz"]
+    quiz_session = context.chat_data.get("quiz")
+    if not quiz_session:
+        return
+
     quiz = quiz_session["data"]
 
     if quiz_session["index"] >= len(quiz["questions"]):
         await context.bot.send_message(chat_id, "Quiz Finished!")
+        context.chat_data.pop("quiz")
         return
 
     q = quiz["questions"][quiz_session["index"]]
@@ -200,7 +223,9 @@ async def send_question(context, chat_id):
 
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_question(context, update.poll_answer.user.id)
+    # Next question after each answer
+    for chat_id in context.application.chat_data:
+        await send_question(context, chat_id)
 
 
 # ---------------- MAIN ---------------- #
@@ -209,7 +234,10 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[CommandHandler("create", create)],
+        entry_points=[
+            CommandHandler("create", create),
+            MessageHandler(filters.Regex("^Create Quiz$"), create),
+        ],
         states={
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_title)],
             DESC: [
@@ -221,6 +249,7 @@ def main():
                 CommandHandler("done", done),
             ],
             TIMER: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_timer)],
+            SHUFFLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_shuffle)],
         },
         fallbacks=[],
     )
