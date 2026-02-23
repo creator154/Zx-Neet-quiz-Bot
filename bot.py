@@ -1,0 +1,237 @@
+import logging
+import os
+import uuid
+import random
+
+from telegram import (
+    Update,
+    Poll,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonPollType,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    PollAnswerHandler,
+    ConversationHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+
+# ---------------- CONFIG ---------------- #
+
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+
+if not TOKEN:
+    raise ValueError("TELEGRAM_TOKEN not set in Heroku config")
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+TITLE, DESC, QUESTION, TIMER, SHUFFLE = range(5)
+
+# ---------------- START ---------------- #
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[KeyboardButton("Create Quiz")]]
+    await update.message.reply_text(
+        "Welcome!\nClick below to create quiz.",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+    )
+
+# ---------------- CREATE FLOW ---------------- #
+
+async def create(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send quiz title:")
+    return TITLE
+
+
+async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["title"] = update.message.text
+    context.user_data["questions"] = []
+    await update.message.reply_text("Send description or type /skip")
+    return DESC
+
+
+async def save_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["desc"] = update.message.text
+    return await ask_question(update)
+
+
+async def skip_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["desc"] = ""
+    return await ask_question(update)
+
+
+async def ask_question(update):
+    keyboard = [[KeyboardButton("Add Question", request_poll=KeyboardButtonPollType(type="quiz"))]]
+    await update.message.reply_text(
+        "Add question using Quiz Poll.",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+    )
+    return QUESTION
+
+
+async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    poll = update.message.poll
+
+    if poll.type != "quiz":
+        await update.message.reply_text("Only quiz type allowed.")
+        return QUESTION
+
+    question_data = {
+        "question": poll.question,
+        "options": [opt.text for opt in poll.options],
+        "correct": poll.correct_option_id,
+        "explanation": poll.explanation or "",
+    }
+
+    context.user_data["questions"].append(question_data)
+
+    await update.message.reply_text(
+        f"Saved {len(context.user_data['questions'])} questions.\nSend next or /done"
+    )
+
+    return QUESTION
+
+
+# ---------------- DONE ---------------- #
+
+async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data["questions"]:
+        await update.message.reply_text("No questions added.")
+        return ConversationHandler.END
+
+    keyboard = [
+        [KeyboardButton("10"), KeyboardButton("20"), KeyboardButton("30")],
+        [KeyboardButton("45"), KeyboardButton("60")],
+    ]
+
+    await update.message.reply_text(
+        "Select timer per question (seconds):",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+    )
+
+    return TIMER
+
+
+async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["timer"] = int(update.message.text)
+    return await save_quiz(update, context)
+
+
+async def save_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    quiz_id = str(uuid.uuid4())[:8]
+
+    context.bot_data.setdefault("quizzes", {})[quiz_id] = {
+        "title": context.user_data["title"],
+        "desc": context.user_data["desc"],
+        "questions": context.user_data["questions"],
+        "timer": context.user_data["timer"],
+    }
+
+    buttons = [
+        [InlineKeyboardButton("Start Quiz", callback_data=f"start_{quiz_id}")],
+        [InlineKeyboardButton("Start In Group", switch_inline_query=f"start {quiz_id}")],
+    ]
+
+    await update.message.reply_text(
+        "Quiz Created Successfully!",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# ---------------- START QUIZ ---------------- #
+
+async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    quiz_id = query.data.split("_")[1]
+    quiz = context.bot_data["quizzes"].get(quiz_id)
+
+    if not quiz:
+        await query.edit_message_text("Quiz not found.")
+        return
+
+    context.chat_data["quiz"] = {
+        "index": 0,
+        "score": {},
+        "data": quiz,
+    }
+
+    await query.edit_message_text(f"Starting: {quiz['title']}")
+
+    await send_question(context, query.message.chat_id)
+
+
+async def send_question(context, chat_id):
+    quiz_session = context.chat_data["quiz"]
+    quiz = quiz_session["data"]
+
+    if quiz_session["index"] >= len(quiz["questions"]):
+        await context.bot.send_message(chat_id, "Quiz Finished!")
+        return
+
+    q = quiz["questions"][quiz_session["index"]]
+
+    await context.bot.send_poll(
+        chat_id,
+        question=q["question"],
+        options=q["options"],
+        type=Poll.QUIZ,
+        correct_option_id=q["correct"],
+        explanation=q["explanation"],
+        is_anonymous=False,
+        open_period=quiz["timer"],
+    )
+
+    quiz_session["index"] += 1
+
+
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_question(context, update.poll_answer.user.id)
+
+
+# ---------------- MAIN ---------------- #
+
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("create", create)],
+        states={
+            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_title)],
+            DESC: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_desc),
+                CommandHandler("skip", skip_desc),
+            ],
+            QUESTION: [
+                MessageHandler(filters.POLL, save_question),
+                CommandHandler("done", done),
+            ],
+            TIMER: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_timer)],
+        },
+        fallbacks=[],
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(start_quiz, pattern="^start_"))
+    app.add_handler(PollAnswerHandler(handle_answer))
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
