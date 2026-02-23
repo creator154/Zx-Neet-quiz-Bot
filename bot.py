@@ -1,44 +1,35 @@
-# bot.py - Official-like Telegram Quiz Bot
+# bot.py - Official-like Telegram Quiz Bot (timer + shuffle + inline buttons)
 # Heroku ready - CLEAN, no syntax error
 
 import logging
 import os
 import uuid
-from telegram import Update, Poll, ReplyKeyboardMarkup, KeyboardButton, KeyboardButtonPollType, ReplyKeyboardRemove
+from telegram import (
+    Update, Poll, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardRemove, KeyboardButton, KeyboardButtonPollType, ReplyKeyboardMarkup
+)
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    PollAnswerHandler,
-    ConversationHandler,
-    filters,
-    ContextTypes,
+    Application, CommandHandler, MessageHandler, PollAnswerHandler,
+    ConversationHandler, CallbackQueryHandler, filters, ContextTypes
 )
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# States
-TITLE, DESC, QUESTION, TIMER, SHUFFLE, NEGATIVE = range(6)
-QUESTION_TIMER = 30  # default
+TITLE, DESC, QUESTION, TIMER, SHUFFLE = range(5)
+QUESTION_TIMER = 30
 
-# Token
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 if not TOKEN:
     raise ValueError("TELEGRAM_TOKEN not set!")
 
-# START COMMAND
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    keyboard = [
-        [KeyboardButton("Create New Quiz")]
-    ]
+# ----------- START ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[KeyboardButton("Create New Quiz")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        "Hi! Tap below to create your quiz:",
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text("Hi! Tap below to create your quiz:", reply_markup=reply_markup)
 
-# CREATE QUIZ
+# ----------- CREATE QUIZ ----------
 async def create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Send quiz title")
     return TITLE
@@ -51,24 +42,19 @@ async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def save_desc_or_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if update.message.text != '/skip':
         context.user_data['desc'] = update.message.text
-
-    # First poll button
     keyboard = [
         [KeyboardButton("Add First Question", request_poll=KeyboardButtonPollType(type="quiz"))]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        "Now add your first question using the button below:",
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text("Now add your first question using the button below:", reply_markup=reply_markup)
     context.user_data['questions'] = []
     return QUESTION
 
-# SAVE QUESTION
+# ----------- ADD QUESTIONS ----------
 async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     poll = update.message.poll
     if poll.type != Poll.QUIZ:
-        await update.message.reply_text("Send quiz mode poll only!")
+        await update.message.reply_text("Send only quiz mode poll!")
         return QUESTION
 
     q = {
@@ -79,34 +65,169 @@ async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     }
     context.user_data['questions'].append(q)
 
-    # Next poll / done buttons
     keyboard = [
         [KeyboardButton("Add Next Question", request_poll=KeyboardButtonPollType(type="quiz"))],
         [KeyboardButton("/done")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        f"Saved ({len(context.user_data['questions'])}) questions.\nAdd next or /done",
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text(f"Saved ({len(context.user_data['questions'])})\nAdd next or /done", reply_markup=reply_markup)
     return QUESTION
 
-# DONE ADDING QUESTIONS -> Timer
+# ----------- DONE QUESTIONS ----------
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     qs = context.user_data.get('questions', [])
     if not qs:
         await update.message.reply_text("No questions added")
         return ConversationHandler.END
 
-    # Timer buttons (official-like)
+    # Timer selection
     keyboard = [
         [KeyboardButton("10 sec"), KeyboardButton("15 sec"), KeyboardButton("20 sec")],
         [KeyboardButton("30 sec"), KeyboardButton("45 sec"), KeyboardButton("60 sec")],
         [KeyboardButton("Skip timer")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Select time per question (10-60 sec)", reply_markup=reply_markup)
+    return TIMER
+
+async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    timer = 30
+    if text != "Skip timer":
+        try:
+            timer = int(text.split()[0])
+        except:
+            timer = 30
+    context.user_data['timer'] = timer
+
+    # Shuffle selection
+    keyboard = [
+        [KeyboardButton("Shuffle All")],
+        [KeyboardButton("No Shuffle")],
+        [KeyboardButton("Only Questions"), KeyboardButton("Only Answers")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text("Shuffle questions and answer options?", reply_markup=reply_markup)
+    return SHUFFLE
+
+async def set_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    shuffle_questions = shuffle_answers = False
+    if text == "Shuffle All":
+        shuffle_questions = shuffle_answers = True
+    elif text == "Only Questions":
+        shuffle_questions = True
+    elif text == "Only Answers":
+        shuffle_answers = True
+
+    title = context.user_data.get('title', 'Untitled')
+    desc = context.user_data.get('desc', '')
+    qs = context.user_data.get('questions', [])
+    timer = context.user_data.get('timer', 30)
+    quiz_id = str(uuid.uuid4())[:8]
+
+    context.bot_data.setdefault('quizzes', {})[quiz_id] = {
+        'title': title,
+        'desc': desc,
+        'questions': qs,
+        'timer': timer,
+        'shuffle_questions': shuffle_questions,
+        'shuffle_answers': shuffle_answers
+    }
+
+    # Inline buttons summary
+    buttons = [
+        [InlineKeyboardButton("▶️ Start Quiz", callback_data=f"start_{quiz_id}")],
+        [InlineKeyboardButton("Start in Group", switch_inline_query_current_chat=f"startquiz {quiz_id}")],
+        [InlineKeyboardButton("Quiz Stats", callback_data=f"stats_{quiz_id}")],
+        [InlineKeyboardButton("View My Quiz", callback_data=f"view_{quiz_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
+
     await update.message.reply_text(
-        "Select time per question:",
+        f"Quiz saved!\n📁 {title}\n{desc}\nTotal questions: {len(qs)}\n⏱ {timer} sec per question",
+        reply_markup=reply_markup
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# ----------- START QUIZ HANDLER ----------
+async def start_quiz_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    quiz_id = query.data.split("_")[1]
+    quiz = context.bot_data['quizzes'].get(quiz_id)
+    if not quiz:
+        await query.edit_message_text("Quiz not found!")
+        return
+    chat_id = query.message.chat_id
+    context.chat_data['active_quiz'] = {'quiz': quiz, 'index': 0, 'scores': {}}
+    await query.edit_message_text(f"Quiz started in this chat: {quiz['title']}")
+    await send_next(context, chat_id)
+
+async def send_next(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    active = context.chat_data.get('active_quiz')
+    if not active:
+        return
+    index = active['index']
+    quiz = active['quiz']
+    if index >= len(quiz['questions']):
+        scores = active['scores']
+        leaderboard = "\n".join([f"{uid}: {score}" for uid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True)])
+        await context.bot.send_message(chat_id, f"🏆 Leaderboard:\n{leaderboard}")
+        context.chat_data.pop('active_quiz', None)
+        return
+
+    q = quiz['questions'][index]
+    await context.bot.send_poll(
+        chat_id=chat_id,
+        question=q['question'],
+        options=q['options'],
+        type=Poll.QUIZ,
+        correct_option_id=q['correct'],
+        explanation=q['explanation'],
+        is_anonymous=False,
+        open_period=quiz.get('timer', QUESTION_TIMER)
+    )
+    active['index'] += 1
+
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    poll_answer = update.poll_answer
+    user_id = poll_answer.user.id
+    active = context.chat_data.get('active_quiz')
+    if not active:
+        return
+    index = active['index'] - 1
+    q = active['quiz']['questions'][index]
+    selected = poll_answer.option_ids[0] if poll_answer.option_ids else None
+    if selected == q['correct']:
+        active['scores'][user_id] = active['scores'].get(user_id, 0) + 1
+
+# ----------- MAIN ----------
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("create", create)],
+        states={
+            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_title)],
+            DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_desc_or_skip)],
+            QUESTION: [MessageHandler(filters.POLL, save_question), CommandHandler("done", done)],
+            TIMER: [MessageHandler(filters.TEXT, set_timer)],
+            SHUFFLE: [MessageHandler(filters.TEXT, set_shuffle)],
+        },
+        fallbacks=[]
+    )
+
+    app.add_handler(conv)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(start_quiz_group, pattern="^start_"))
+    app.add_handler(PollAnswerHandler(handle_answer))
+
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()        "Select time per question:",
         reply_markup=reply_markup
     )
     return TIMER
