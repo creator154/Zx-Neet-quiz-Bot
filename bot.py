@@ -1,5 +1,3 @@
-# FINAL COMPLETE QUIZ BOT
-
 import logging
 import os
 import uuid
@@ -10,8 +8,9 @@ from telegram import (
     Update, Poll,
     InlineKeyboardButton, InlineKeyboardMarkup,
     KeyboardButton, KeyboardButtonPollType,
-    ReplyKeyboardMarkup, ReplyKeyboardRemove
+    ReplyKeyboardMarkup
 )
+
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     PollAnswerHandler, ConversationHandler,
@@ -48,28 +47,30 @@ async def create(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return TITLE
 
 async def save_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['title'] = update.message.text
+    context.user_data["title"] = update.message.text
     await update.message.reply_text("Send description or /skip")
     return DESC
 
 async def save_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['desc'] = update.message.text
-    return await ask_question(update)
+    context.user_data["desc"] = update.message.text
+    return await ask_question(update, context)
 
 async def skip_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['desc'] = ""
-    return await ask_question(update)
+    context.user_data["desc"] = ""
+    return await ask_question(update, context)
 
-async def ask_question(update):
+async def ask_question(update, context):
+    context.user_data["questions"] = []
+
     keyboard = [[KeyboardButton(
         "➕ Add Question",
         request_poll=KeyboardButtonPollType(type="quiz")
     )]]
+
     await update.message.reply_text(
-        "Add quiz questions below:",
+        "Add quiz questions.\nType /done when finished.",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
-    context.user_data['questions'] = []
     return QUESTION
 
 async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,22 +80,15 @@ async def save_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Send QUIZ type poll only.")
         return QUESTION
 
-    context.user_data['questions'].append({
+    context.user_data["questions"].append({
         "question": poll.question,
         "options": [o.text for o in poll.options],
         "correct": poll.correct_option_id,
         "explanation": poll.explanation or ""
     })
 
-    keyboard = [
-        [KeyboardButton("➕ Add Question",
-            request_poll=KeyboardButtonPollType(type="quiz"))],
-        [KeyboardButton("/done")]
-    ]
-
     await update.message.reply_text(
-        f"✅ Saved ({len(context.user_data['questions'])})",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        f"✅ Question Saved ({len(context.user_data['questions'])})"
     )
     return QUESTION
 
@@ -159,13 +153,6 @@ async def set_negative(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "negative": context.user_data.get("negative", 0)
     }
 
-    await show_summary(update, context, quiz_id)
-    context.user_data.clear()
-    return ConversationHandler.END
-
-# ================= SUMMARY =================
-
-async def show_summary(update, context, quiz_id):
     quiz = context.bot_data["quizzes"][quiz_id]
 
     text = (
@@ -178,8 +165,7 @@ async def show_summary(update, context, quiz_id):
     )
 
     keyboard = [
-        [InlineKeyboardButton("▶️ Start Quiz in Group",
-                              callback_data=f"start_{quiz_id}")],
+        [InlineKeyboardButton("▶ Start Quiz in Group", callback_data=f"start_{quiz_id}")],
         [InlineKeyboardButton("🔙 Back", callback_data="home")]
     ]
 
@@ -188,49 +174,19 @@ async def show_summary(update, context, quiz_id):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-# ================= VIEW MY QUIZZES =================
+    context.user_data.clear()
+    return ConversationHandler.END
 
-async def view_my_quizzes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    quizzes = context.bot_data.get("quizzes", {})
-
-    buttons = []
-
-    for qid, quiz in quizzes.items():
-        if quiz["owner"] == user_id:
-            buttons.append(
-                [InlineKeyboardButton(
-                    quiz["title"],
-                    callback_data=f"open_{qid}"
-                )]
-            )
-
-    if not buttons:
-        await update.message.reply_text("No quizzes found.")
-        return
-
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="home")])
-
-    await update.message.reply_text(
-        "Your Quizzes:",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-# ================= CALLBACK =================
+# ================= READY SYSTEM =================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     data = query.data
 
     if data == "home":
         await start(query, context)
         return
-
-    if data.startswith("open_"):
-        quiz_id = data.split("_")[1]
-        await show_summary(query, context, quiz_id)
 
     if data.startswith("start_"):
         quiz_id = data.split("_")[1]
@@ -241,25 +197,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "ready": set()
         }
 
-        keyboard = [[InlineKeyboardButton("I am Ready!", callback_data="ready")]]
+        keyboard = [
+            [InlineKeyboardButton("✅ I'm Ready", callback_data="ready")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
+        ]
 
         await query.edit_message_text(
-            f"🎯 {quiz['title']}\nWaiting for 2 players...",
+            "👥 Players Ready: 0/2\nPress I'm Ready",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    if data == "ready":
+    elif data == "ready":
         waiting = context.chat_data.get("waiting")
-        waiting["ready"].add(query.from_user.id)
+        if not waiting:
+            return
 
-        if len(waiting["ready"]) >= 2:
+        waiting["ready"].add(query.from_user.id)
+        count = len(waiting["ready"])
+
+        if count >= 2:
             context.chat_data["active"] = {
                 "quiz": waiting["quiz"],
                 "index": 0,
                 "scores": defaultdict(float)
             }
-            await query.edit_message_text("🚀 Quiz Starting!")
+            context.chat_data.pop("waiting")
+            await query.edit_message_text("🚀 Quiz Starting...")
             await send_next(context, query.message.chat.id)
+        else:
+            keyboard = [
+                [InlineKeyboardButton("✅ I'm Ready", callback_data="ready")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
+            ]
+            await query.edit_message_text(
+                f"👥 Players Ready: {count}/2",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+    elif data == "cancel":
+        context.chat_data.pop("waiting", None)
+        await query.edit_message_text("❌ Quiz Cancelled")
 
 # ================= QUIZ ENGINE =================
 
@@ -273,9 +250,7 @@ async def send_next(context, chat_id):
 
     if index >= len(quiz["questions"]):
         text = "🏆 Leaderboard:\n\n"
-        for uid, score in sorted(active["scores"].items(),
-                                 key=lambda x: x[1],
-                                 reverse=True):
+        for uid, score in sorted(active["scores"].items(), key=lambda x:x[1], reverse=True):
             text += f"{uid}: {score}\n"
         await context.bot.send_message(chat_id, text)
         context.chat_data.clear()
@@ -320,9 +295,7 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     conv = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex("^Create New Quiz$"), create)
-        ],
+        entry_points=[MessageHandler(filters.Regex("^Create New Quiz$"), create)],
         states={
             TITLE:[MessageHandler(filters.TEXT & ~filters.COMMAND, save_title)],
             DESC:[
@@ -342,7 +315,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
-    app.add_handler(MessageHandler(filters.Regex("^View My Quizzes$"), view_my_quizzes))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(PollAnswerHandler(handle_answer))
 
