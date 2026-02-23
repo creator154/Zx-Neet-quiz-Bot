@@ -40,16 +40,40 @@ TITLE, DESC, QUESTION, TIMER, SHUFFLE = range(5)
 # ---------------- START ---------------- #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    # Deep link group start
+    if context.args:
+        quiz_id = context.args[0]
+        quiz = context.bot_data.get("quizzes", {}).get(quiz_id)
+
+        if not quiz:
+            await update.message.reply_text("Quiz not found.")
+            return
+
+        context.chat_data["quiz"] = {
+            "index": 0,
+            "data": quiz,
+        }
+
+        await update.message.reply_text(
+            f"Starting: {quiz['title']}",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+
+        await send_question(context, update.effective_chat.id)
+        return
+
     keyboard = [[KeyboardButton("Create Quiz")]]
     await update.message.reply_text(
         "Welcome!\nClick below to create quiz.",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
 
-# ---------------- CREATE ---------------- #
+
+# ---------------- CREATE FLOW ---------------- #
 
 async def create(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send quiz title:")
+    await update.message.reply_text("Send quiz title:", reply_markup=ReplyKeyboardRemove())
     return TITLE
 
 
@@ -110,12 +134,12 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     keyboard = [
-        [KeyboardButton("10"), KeyboardButton("20"), KeyboardButton("30")],
-        [KeyboardButton("45"), KeyboardButton("60")],
+        [KeyboardButton("10"), KeyboardButton("15"), KeyboardButton("20")],
+        [KeyboardButton("30"), KeyboardButton("45"), KeyboardButton("1 min")],
     ]
 
     await update.message.reply_text(
-        "Select timer per question (seconds):",
+        "Select timer per question:",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
 
@@ -123,7 +147,12 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["timer"] = int(update.message.text)
+    text = update.message.text
+
+    if text == "1 min":
+        context.user_data["timer"] = 60
+    else:
+        context.user_data["timer"] = int(text)
 
     keyboard = [
         [KeyboardButton("Shuffle All")],
@@ -139,9 +168,7 @@ async def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def set_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["shuffle"] = update.message.text
-
-    if context.user_data["shuffle"] == "Shuffle All":
+    if update.message.text == "Shuffle All":
         random.shuffle(context.user_data["questions"])
 
     quiz_id = str(uuid.uuid4())[:8]
@@ -177,7 +204,7 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     quiz_id = query.data.split("_")[1]
-    quiz = context.bot_data["quizzes"].get(quiz_id)
+    quiz = context.bot_data.get("quizzes", {}).get(quiz_id)
 
     if not quiz:
         await query.edit_message_text("Quiz not found.")
@@ -188,9 +215,7 @@ async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "data": quiz,
     }
 
-    # REMOVE BUTTONS AFTER CLICK
     await query.edit_message_text(f"Starting: {quiz['title']}")
-
     await send_question(context, query.message.chat_id)
 
 
@@ -209,7 +234,7 @@ async def send_question(context, chat_id):
     q = quiz["questions"][quiz_session["index"]]
 
     await context.bot.send_poll(
-        chat_id,
+        chat_id=chat_id,
         question=q["question"],
         options=q["options"],
         type=Poll.QUIZ,
@@ -223,8 +248,7 @@ async def send_question(context, chat_id):
 
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Next question after each answer
-    for chat_id in context.application.chat_data:
+    for chat_id in list(context.application.chat_data.keys()):
         await send_question(context, chat_id)
 
 
